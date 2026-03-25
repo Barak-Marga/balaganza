@@ -717,25 +717,69 @@ function exportCSV(){
 
 function setSpMsg(msg,type){const el=document.getElementById('spMsg');el.textContent=msg;el.className='sp-msg show '+type;}
 
-function spLogin(){
+async function spLogin(){
   localStorage.setItem('b_sp_room',currentEQRoom||'');
-  location.href='https://accounts.spotify.com/authorize?'+new URLSearchParams({client_id:SP_CLIENT_ID,response_type:'token',redirect_uri:SP_REDIRECT,scope:'playlist-modify-public playlist-modify-private',state:'dj'});
+  // PKCE - generate code verifier and challenge
+  const verifier=generateVerifier();
+  localStorage.setItem('b_pkce',verifier);
+  const challenge=await generateChallenge(verifier);
+  location.href='https://accounts.spotify.com/authorize?'+new URLSearchParams({
+    client_id:SP_CLIENT_ID,response_type:'code',
+    redirect_uri:SP_REDIRECT,
+    scope:'playlist-modify-public playlist-modify-private',
+    state:'dj',
+    code_challenge_method:'S256',
+    code_challenge:challenge
+  });
 }
 
-function handleSpotifyCB(){
-  // Implicit Grant - token in URL hash
-  const hash=location.hash.substring(1);
-  const params=new URLSearchParams(hash);
-  const token=params.get('access_token');
-  if(!token)return;
+function generateVerifier(){
+  const arr=new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  return btoa(String.fromCharCode(...arr)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+}
+
+async function generateChallenge(verifier){
+  const data=new TextEncoder().encode(verifier);
+  const digest=await crypto.subtle.digest('SHA-256',data);
+  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+}
+
+async function handleSpotifyCB(){
+  const params=new URLSearchParams(location.search);
+  const code=params.get('code');
+  if(!code)return;
   history.replaceState({},'','https://barak-marga.github.io/balaganza/balaganza_v7.html');
-  spToken=token;
-  localStorage.setItem('b_spt',spToken);
-  isDJ=true;localStorage.setItem('b_dj','1');
-  show('sDJ');
-  const savedRoom=localStorage.getItem('b_sp_room');
-  if(savedRoom&&allEvents[savedRoom])setTimeout(()=>openEQ(savedRoom,allEvents[savedRoom].name,allEvents[savedRoom].type||'',''),600);
-  toast('✅ מחובר לספוטיפיי!','success');
+  const verifier=localStorage.getItem('b_pkce');
+  if(!verifier){console.error('No PKCE verifier');return;}
+  try{
+    const res=await fetch('https://accounts.spotify.com/api/token',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({
+        grant_type:'authorization_code',
+        code,
+        redirect_uri:SP_REDIRECT,
+        client_id:SP_CLIENT_ID,
+        code_verifier:verifier
+      })
+    });
+    const d=await res.json();
+    console.log('Token response:', d.access_token?'got token':'error', d.error||'');
+    if(d.access_token){
+      spToken=d.access_token;
+      localStorage.setItem('b_spt',spToken);
+      localStorage.removeItem('b_pkce');
+      isDJ=true;localStorage.setItem('b_dj','1');
+      show('sDJ');
+      const savedRoom=localStorage.getItem('b_sp_room');
+      if(savedRoom&&allEvents[savedRoom])setTimeout(()=>openEQ(savedRoom,allEvents[savedRoom].name,allEvents[savedRoom].type||'',''),600);
+      toast('✅ מחובר לספוטיפיי!','success');
+    } else {
+      console.error('Token error:', d);
+      toast('שגיאה בחיבור לספוטיפיי','error');
+    }
+  }catch(e){console.error('PKCE error:',e);}
 }
 
 async function exportSpotify(){
